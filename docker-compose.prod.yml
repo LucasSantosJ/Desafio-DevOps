@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  app:
+    # A variavel IMAGE_TAG vem do script do GitHub Actions
+    # Substitua 'seu-usuario-docker' abaixo pelo seu usuario real do Docker Hub (ex: lucaszorin)
+    image: luskas5488/itens-app:${IMAGE_TAG}
+    ports:
+      - "80:8080"
+    networks:
+      - app-net
+    depends_on:
+      - mongo-db
+    environment:
+      - SPRING_DATA_MONGODB_URI=mongodb://${MONGO_USER}:${MONGO_PASS}@mongo-db:27017/${MONGO_DB_NAME}?authSource=admin
+
+  mongo-db:
+    image: mongo:latest
+    networks:
+      - app-net
+    volumes:
+      - mongo-data:/data/db
+      - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASS}
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASS=${MONGO_PASS}
+      - MONGO_DB_NAME=${MONGO_DB_NAME}
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  mongo-data:

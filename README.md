@@ -105,3 +105,27 @@ Para parar e remover os containers, redes e volumes, execute:
 Bash
 
 sudo docker compose down
+---
+
+## 🚀 CI/CD Pipeline (Automação)
+
+Este projeto implementa um pipeline de Integração e Entrega Contínua usando GitHub Actions.
+
+![Status do Build](https://github.com/SEU_USUARIO/NOME_DO_REPO/actions/workflows/cicd.yml/badge.svg)
+*(Substitua SEU_USUARIO e NOME_DO_REPO na URL acima para o badge funcionar)*
+
+### 🔄 Funcionamento do Workflow:
+1.  **Testes (CI):** A cada push na branch `main`, os testes unitários são executados automaticamente.
+2.  **Build & Push:** Se os testes passarem, o projeto é compilado, uma imagem Docker é construída e enviada ao Docker Hub (tageada com o SHA do commit).
+3.  **Deploy (CD):** O GitHub Actions conecta ao servidor VPS via SSH, baixa a nova imagem e reinicia os containers usando o `docker-compose.prod.yml`.
+
+### 🔑 Secrets Configuradas:
+Para garantir a segurança, as credenciais não estão no código, mas nas **Secrets** do GitHub:
+* `DOCKER_USERNAME` e `DOCKER_PASSWORD`: Para acesso ao Docker Hub.
+* `HOST_IP`, `HOST_USER` e `SSH_PRIVATE_KEY`: Para acesso SSH ao servidor de produção.
+
+### 🛠️ Setup do Servidor de Produção:
+Para preparar o ambiente de produção, foram realizados os passos manuais:
+1.  Instalação do Docker e Docker Compose na VPS.
+2.  Clone do repositório.
+3.  Criação do arquivo `.env` com as variáveis sensíveis do banco de dados.

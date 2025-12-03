@@ -15,5 +15,5 @@ db.createUser({
 // Conecta-se ao banco de dados da aplicação
 db = db.getSiblingDB(process.env.MONGO_DB_NAME);
 
-// Cria uma coleção inicial (opcional)
+// Cria uma coleção inicial 
 db.createCollection('items');
