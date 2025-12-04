@@ -67,17 +67,15 @@ jobs:
         working-directory: ./terraform
         env:
           TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
+          # O Terraform vai procurar este arquivo no diretório de trabalho (./terraform)
           TF_VAR_ssh_key_path: "id_rsa.pub"
         run: |
-          # --- CORREÇÃO MÁGICA AQUI ---
-          # Em vez de criar uma chave aleatória, recuperamos a SUA chave privada dos Secrets
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > id_rsa
-          chmod 600 id_rsa
+          # CORREÇÃO CRUCIAL AQUI:
+          # Usamos '-f id_rsa' (sem extensão). 
+          # O ssh-keygen cria 'id_rsa' (privada) e 'id_rsa.pub' (pública) automaticamente.
+          ssh-keygen -t rsa -b 4096 -f id_rsa -N ""
           
-          # Geramos a chave PÚBLICA a partir da privada. 
-          # Assim, o Terraform verá que é a mesma chave e NÃO recriará o servidor.
-          ssh-keygen -y -f id_rsa > id_rsa.pub
-          
+          # Agora o arquivo id_rsa.pub existe e é válido
           terraform apply -auto-approve
 
       - name: Get Droplet IP
@@ -95,6 +93,7 @@ jobs:
     - name: Deploy to VPS via SSH
       uses: appleboy/ssh-action@v1.0.0
       with:
+        # Pega o IP dinâmico criado pelo Terraform
         host: ${{ needs.provision-infra.outputs.droplet_ip }}
         username: root
         key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -116,7 +115,7 @@ jobs:
              echo "MONGO_DB_NAME=meudb" >> .env
           fi
 
-          # Instala docker-compose se não tiver
+          # Instala docker-compose se não tiver (garantia extra)
           if ! command -v docker-compose &> /dev/null; then
               apt-get update && apt-get install -y docker-compose
           fi
