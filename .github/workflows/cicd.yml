@@ -43,6 +43,7 @@ jobs:
         docker push ${{ secrets.DOCKER_USERNAME }}/itens-app:${{ github.sha }}
 
   # Job 3: Provisionar Infraestrutura (Terraform)
+  # Job 3: Provisionar Infraestrutura (Terraform)
   provision-infra:
     needs: test
     runs-on: ubuntu-latest
@@ -67,10 +68,13 @@ jobs:
         working-directory: ./terraform
         env:
           TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
+          # Aponta para o arquivo .pub que será gerado abaixo
           TF_VAR_ssh_key_path: "id_rsa.pub"
         run: |
-          # Cria uma chave fake apenas para validação do Terraform (a real já está na DO)
-          ssh-keygen -t rsa -b 4096 -f id_rsa.pub -N ""
+          # CORREÇÃO: Removemos a extensão .pub do comando -f
+          # Isso cria 'id_rsa' (privada) e 'id_rsa.pub' (pública) corretamente
+          ssh-keygen -t rsa -b 4096 -f id_rsa -N ""
+          
           terraform apply -auto-approve
 
       - name: Get Droplet IP
@@ -79,42 +83,3 @@ jobs:
         run: |
           IP=$(terraform output -raw droplet_ip)
           echo "ip=$IP" >> $GITHUB_OUTPUT
-
-  # Job 4: Deploy no Servidor
-  deploy:
-    needs: [build-and-push, provision-infra]
-    runs-on: ubuntu-latest
-    steps:
-    - name: Deploy to VPS via SSH
-      uses: appleboy/ssh-action@v1.0.0
-      with:
-        host: ${{ needs.provision-infra.outputs.droplet_ip }}
-        username: root
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        script: |
-          # Garante que a pasta existe
-          if [ ! -d "app-itens" ]; then
-            git clone https://github.com/${{ github.repository }}.git app-itens
-          fi
-          
-          cd app-itens
-          git pull origin main
-          
-          # Cria .env se não existir
-          if [ ! -f .env ]; then
-             echo "MONGO_ROOT_USER=root" >> .env
-             echo "MONGO_ROOT_PASS=admin123" >> .env
-             echo "MONGO_USER=appuser" >> .env
-             echo "MONGO_PASS=app123" >> .env
-             echo "MONGO_DB_NAME=meudb" >> .env
-          fi
-
-          # Garante docker-compose
-          if ! command -v docker-compose &> /dev/null; then
-              apt-get update && apt-get install -y docker-compose
-          fi
-
-          # Deploy
-          docker-compose -f docker-compose.prod.yml down
-          export IMAGE_TAG=${{ github.sha }}
-          docker-compose -f docker-compose.prod.yml up -d
