@@ -129,3 +129,27 @@ Para preparar o ambiente de produção, foram realizados os passos manuais:
 1.  Instalação do Docker e Docker Compose na VPS.
 2.  Clone do repositório.
 3.  Criação do arquivo `.env` com as variáveis sensíveis do banco de dados.
+
+🏗️ Infraestrutura como Código (Terraform)
+
+Este projeto agora provisiona sua própria infraestrutura na DigitalOcean automaticamente.
+
+⚙️ Como funciona a Infra:
+
+O diretório terraform/ contém a definição do servidor (IaC).
+
+Provisionamento: O pipeline roda terraform apply antes do deploy.
+
+Estado Remoto: O estado (.tfstate) é salvo em um DigitalOcean Space para persistência entre execuções.
+
+Boot: O servidor é criado com um script Cloud-Init que instala Docker e Docker Compose automaticamente na primeira inicialização.
+
+🔑 Novos Secrets Necessários:
+
+Para o Terraform funcionar no GitHub Actions, foram adicionadas:
+
+DO_TOKEN: Token de API da DigitalOcean.
+
+TF_STATE_ACCESS_KEY: Chave de acesso ao Space (Bucket).
+
+TF_STATE_SECRET_KEY: Segredo de acesso ao Space.

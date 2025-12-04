@@ -40,3 +40,11 @@ build/
 
 # Arquivo de variáveis de ambiente
 .env
+
+# Terraform
+
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
