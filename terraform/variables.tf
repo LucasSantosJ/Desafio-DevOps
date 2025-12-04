@@ -5,7 +5,6 @@ variable "do_token" {
 }
 
 variable "ssh_key_path" {
-  description = "Caminho para sua chave pública SSH local"
+  description = "Caminho para sua chave pública SSH"
   type        = string
-  default     = "~/.ssh/id_rsa.pub"
 }

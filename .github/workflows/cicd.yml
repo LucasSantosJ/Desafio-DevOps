@@ -5,49 +5,63 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # Job 1: Testes Unitários (CI)
+
+  # ============================================================
+  # JOB 1 — TESTES
+  # ============================================================
   test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+
     - name: Set up JDK 21
       uses: actions/setup-java@v3
       with:
         java-version: '21'
         distribution: 'temurin'
         cache: maven
+
     - name: Run Tests
       run: ./mvnw clean test
 
-  # Job 2: Build e Push da Imagem Docker
+  # ============================================================
+  # JOB 2 — Build + Push Docker
+  # ============================================================
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+
     - name: Set up JDK 21
       uses: actions/setup-java@v3
       with:
         java-version: '21'
         distribution: 'temurin'
+
     - name: Build JAR
       run: ./mvnw clean package -DskipTests
+
     - name: Login to Docker Hub
       uses: docker/login-action@v2
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
+
     - name: Build and Push Docker Image
       run: |
         docker build -t ${{ secrets.DOCKER_USERNAME }}/itens-app:${{ github.sha }} .
         docker push ${{ secrets.DOCKER_USERNAME }}/itens-app:${{ github.sha }}
 
-  # Job 3: Provisionar Infraestrutura (Terraform)
+  # ============================================================
+  # JOB 3 — Terraform (Infraestrutura)
+  # ============================================================
   provision-infra:
     needs: test
     runs-on: ubuntu-latest
     outputs:
       droplet_ip: ${{ steps.get_ip.outputs.ip }}
+
     steps:
       - uses: actions/checkout@v3
       
@@ -55,6 +69,12 @@ jobs:
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_wrapper: false
+
+      #  AQUI: criamos o id_rsa.pub REAL usando o secret
+      - name: Criar arquivo id_rsa.pub com a chave pública correta
+        working-directory: ./terraform
+        run: |
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > id_rsa.pub
 
       - name: Terraform Init
         working-directory: ./terraform
@@ -67,15 +87,8 @@ jobs:
         working-directory: ./terraform
         env:
           TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
-          # O Terraform vai procurar este arquivo no diretório de trabalho (./terraform)
           TF_VAR_ssh_key_path: "id_rsa.pub"
         run: |
-          # CORREÇÃO CRUCIAL AQUI:
-          # Usamos '-f id_rsa' (sem extensão). 
-          # O ssh-keygen cria 'id_rsa' (privada) e 'id_rsa.pub' (pública) automaticamente.
-          ssh-keygen -t rsa -b 4096 -f id_rsa -N ""
-          
-          # Agora o arquivo id_rsa.pub existe e é válido
           terraform apply -auto-approve
 
       - name: Get Droplet IP
@@ -85,28 +98,28 @@ jobs:
           IP=$(terraform output -raw droplet_ip)
           echo "ip=$IP" >> $GITHUB_OUTPUT
 
-  # Job 4: Deploy no Servidor
+  # ============================================================
+  # JOB 4 — Deploy via SSH
+  # ============================================================
   deploy:
     needs: [build-and-push, provision-infra]
     runs-on: ubuntu-latest
+
     steps:
-    - name: Deploy to VPS via SSH
+    - name: Deploy to VPS
       uses: appleboy/ssh-action@v1.0.0
       with:
-        # Pega o IP dinâmico criado pelo Terraform
         host: ${{ needs.provision-infra.outputs.droplet_ip }}
         username: root
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
-          # Garante que a pasta existe
           if [ ! -d "app-itens" ]; then
             git clone https://github.com/${{ github.repository }}.git app-itens
           fi
-          
+
           cd app-itens
           git pull origin main
-          
-          # Cria o arquivo .env se não existir (apenas na primeira vez)
+
           if [ ! -f .env ]; then
              echo "MONGO_ROOT_USER=root" >> .env
              echo "MONGO_ROOT_PASS=admin123" >> .env
@@ -115,12 +128,10 @@ jobs:
              echo "MONGO_DB_NAME=meudb" >> .env
           fi
 
-          # Instala docker-compose se não tiver (garantia extra)
           if ! command -v docker-compose &> /dev/null; then
               apt-get update && apt-get install -y docker-compose
           fi
 
-          # Deploy
           docker-compose -f docker-compose.prod.yml down
           export IMAGE_TAG=${{ github.sha }}
           docker-compose -f docker-compose.prod.yml up -d
