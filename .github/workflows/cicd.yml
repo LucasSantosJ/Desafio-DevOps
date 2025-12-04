@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # Job 1: Testes (CI)
+  # Job 1: Testes Unitários (CI)
   test:
     runs-on: ubuntu-latest
     steps:
@@ -19,7 +19,7 @@ jobs:
     - name: Run Tests
       run: ./mvnw clean test
 
-  # Job 2: Build e Push Docker
+  # Job 2: Build e Push da Imagem Docker
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
@@ -42,7 +42,6 @@ jobs:
         docker build -t ${{ secrets.DOCKER_USERNAME }}/itens-app:${{ github.sha }} .
         docker push ${{ secrets.DOCKER_USERNAME }}/itens-app:${{ github.sha }}
 
-  # Job 3: Provisionar Infraestrutura (Terraform)
   # Job 3: Provisionar Infraestrutura (Terraform)
   provision-infra:
     needs: test
@@ -68,13 +67,15 @@ jobs:
         working-directory: ./terraform
         env:
           TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
-          # Aponta para o arquivo .pub que será gerado abaixo
+          # O Terraform vai procurar este arquivo no diretório de trabalho (./terraform)
           TF_VAR_ssh_key_path: "id_rsa.pub"
         run: |
-          # CORREÇÃO: Removemos a extensão .pub do comando -f
-          # Isso cria 'id_rsa' (privada) e 'id_rsa.pub' (pública) corretamente
+          # CORREÇÃO CRUCIAL AQUI:
+          # Usamos '-f id_rsa' (sem extensão). 
+          # O ssh-keygen cria 'id_rsa' (privada) e 'id_rsa.pub' (pública) automaticamente.
           ssh-keygen -t rsa -b 4096 -f id_rsa -N ""
           
+          # Agora o arquivo id_rsa.pub existe e é válido
           terraform apply -auto-approve
 
       - name: Get Droplet IP
@@ -83,3 +84,43 @@ jobs:
         run: |
           IP=$(terraform output -raw droplet_ip)
           echo "ip=$IP" >> $GITHUB_OUTPUT
+
+  # Job 4: Deploy no Servidor
+  deploy:
+    needs: [build-and-push, provision-infra]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Deploy to VPS via SSH
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        # Pega o IP dinâmico criado pelo Terraform
+        host: ${{ needs.provision-infra.outputs.droplet_ip }}
+        username: root
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          # Garante que a pasta existe
+          if [ ! -d "app-itens" ]; then
+            git clone https://github.com/${{ github.repository }}.git app-itens
+          fi
+          
+          cd app-itens
+          git pull origin main
+          
+          # Cria o arquivo .env se não existir (apenas na primeira vez)
+          if [ ! -f .env ]; then
+             echo "MONGO_ROOT_USER=root" >> .env
+             echo "MONGO_ROOT_PASS=admin123" >> .env
+             echo "MONGO_USER=appuser" >> .env
+             echo "MONGO_PASS=app123" >> .env
+             echo "MONGO_DB_NAME=meudb" >> .env
+          fi
+
+          # Instala docker-compose se não tiver (garantia extra)
+          if ! command -v docker-compose &> /dev/null; then
+              apt-get update && apt-get install -y docker-compose
+          fi
+
+          # Deploy
+          docker-compose -f docker-compose.prod.yml down
+          export IMAGE_TAG=${{ github.sha }}
+          docker-compose -f docker-compose.prod.yml up -d
