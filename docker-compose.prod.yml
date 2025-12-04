@@ -3,7 +3,6 @@ version: '3.8'
 services:
   app:
     # A variavel IMAGE_TAG vem do script do GitHub Actions
-    # Substitua 'seu-usuario-docker' abaixo pelo seu usuario real do Docker Hub (ex: lucaszorin)
     image: luskas5488/itens-app:${IMAGE_TAG}
     ports:
       - "80:8080"
