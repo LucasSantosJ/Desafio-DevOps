@@ -4,77 +4,59 @@ on:
   push:
     branches: [ "main" ]
 
-jobs:
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/itens-app
 
-  # ============================================================
-  # JOB 1 — TESTES
-  # ============================================================
+jobs:
+  # Job 1: Testes Unitários (CI)
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+      - name: Run Tests
+        run: ./mvnw clean test
 
-    - name: Set up JDK 21
-      uses: actions/setup-java@v3
-      with:
-        java-version: '21'
-        distribution: 'temurin'
-        cache: maven
-
-    - name: Run Tests
-      run: ./mvnw clean test
-
-  # ============================================================
-  # JOB 2 — Build + Push Docker
-  # ============================================================
-  build-and-push:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-
-    - name: Set up JDK 21
-      uses: actions/setup-java@v3
-      with:
-        java-version: '21'
-        distribution: 'temurin'
-
-    - name: Build JAR
-      run: ./mvnw clean package -DskipTests
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-
-    - name: Build and Push Docker Image
-      run: |
-        docker build -t ${{ secrets.DOCKER_USERNAME }}/itens-app:${{ github.sha }} .
-        docker push ${{ secrets.DOCKER_USERNAME }}/itens-app:${{ github.sha }}
-
-  # ============================================================
-  # JOB 3 — Terraform (Infraestrutura)
-  # ============================================================
+  # Job 2: Provisionar Infraestrutura (Terraform) - DEVE VIR ANTES DO BUILD
   provision-infra:
-    needs: test
     runs-on: ubuntu-latest
     outputs:
       droplet_ip: ${{ steps.get_ip.outputs.ip }}
-
+      ssh_private_key: ${{ steps.generate_key.outputs.private_key }}
+    
     steps:
       - uses: actions/checkout@v3
+      
+      - name: Generate SSH Key Pair
+        id: generate_key
+        run: |
+          # Gera par de chaves SSH
+          ssh-keygen -t rsa -b 4096 -f ./id_rsa -N "" -q
+          
+          # Salva a chave PRIVADA como output
+          PRIVATE_KEY=$(cat ./id_rsa)
+          echo "private_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$PRIVATE_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Salva a chave pública em variável
+          echo "PUBLIC_KEY=$(cat ./id_rsa.pub)" >> $GITHUB_ENV
+          
+          # Copia a chave pública para o diretório terraform
+          mkdir -p ./terraform
+          cp ./id_rsa.pub ./terraform/
+          
+          echo "✅ SSH key generated and saved"
       
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_wrapper: false
-
-      #  AQUI: criamos o id_rsa.pub REAL usando o secret
-      - name: Criar arquivo id_rsa.pub com a chave pública correta
-        working-directory: ./terraform
-        run: |
-          echo "${{ secrets.SSH_PUBLIC_KEY }}" > id_rsa.pub
+          terraform_version: 1.5.0
 
       - name: Terraform Init
         working-directory: ./terraform
@@ -82,56 +64,185 @@ jobs:
           terraform init \
             -backend-config="access_key=${{ secrets.TF_STATE_ACCESS_KEY }}" \
             -backend-config="secret_key=${{ secrets.TF_STATE_SECRET_KEY }}"
-
+      
       - name: Terraform Apply
         working-directory: ./terraform
         env:
           TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
-          TF_VAR_ssh_key_path: "id_rsa.pub"
+          TF_VAR_ssh_public_key: "${{ env.PUBLIC_KEY }}"  # Passa a chave pública como variável
         run: |
+          echo "Applying Terraform with generated SSH key..."
           terraform apply -auto-approve
-
+      
       - name: Get Droplet IP
         id: get_ip
         working-directory: ./terraform
         run: |
+          # Aguarda alguns segundos para o droplet ficar pronto
+          sleep 10
+          
           IP=$(terraform output -raw droplet_ip)
           echo "ip=$IP" >> $GITHUB_OUTPUT
+          echo "✅ Droplet IP: $IP"
+          
+          # Testa se consegue pingar (opcional)
+          ping -c 2 $IP || echo "Ping test skipped or failed"
+      
+      - name: Wait for Droplet Initialization
+        run: |
+          echo "⏳ Waiting for droplet to fully initialize (Docker installation via cloud-init)..."
+          sleep 60
+          echo "✅ Droplet should be ready for SSH connections"
 
-  # ============================================================
-  # JOB 4 — Deploy via SSH
-  # ============================================================
+  # Job 3: Build e Push da Imagem Docker
+  build-and-push:
+    needs: [test, provision-infra]  # Aguarda provision-infra
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      
+      - name: Build JAR
+        run: ./mvnw clean package -DskipTests
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Build and Push Docker Image
+        run: |
+          # TAG específica para este commit
+          docker build -t ${{ env.DOCKER_IMAGE }}:${{ github.sha }} .
+          docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          
+          # TAG latest também
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+          docker push ${{ env.DOCKER_IMAGE }}:latest
+
+  # Job 4: Deploy no Servidor - CORRIGIDO
   deploy:
     needs: [build-and-push, provision-infra]
     runs-on: ubuntu-latest
-
+    
     steps:
-    - name: Deploy to VPS
-      uses: appleboy/ssh-action@v1.0.0
-      with:
-        host: ${{ needs.provision-infra.outputs.droplet_ip }}
-        username: root
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        script: |
-          if [ ! -d "app-itens" ]; then
-            git clone https://github.com/${{ github.repository }}.git app-itens
-          fi
-
-          cd app-itens
-          git pull origin main
-
-          if [ ! -f .env ]; then
-             echo "MONGO_ROOT_USER=root" >> .env
-             echo "MONGO_ROOT_PASS=admin123" >> .env
-             echo "MONGO_USER=appuser" >> .env
-             echo "MONGO_PASS=app123" >> .env
-             echo "MONGO_DB_NAME=meudb" >> .env
-          fi
-
-          if ! command -v docker-compose &> /dev/null; then
-              apt-get update && apt-get install -y docker-compose
-          fi
-
-          docker-compose -f docker-compose.prod.yml down
-          export IMAGE_TAG=${{ github.sha }}
-          docker-compose -f docker-compose.prod.yml up -d
+      - name: Setup SSH Key from Previous Job
+        run: |
+          # Usa a chave PRIVADA gerada no job provision-infra
+          mkdir -p ~/.ssh
+          echo "${{ needs.provision-infra.outputs.ssh_private_key }}" > ~/.ssh/id_rsa
+          
+          # CORREÇÃO CRÍTICA: Garante que termina com newline
+          echo "" >> ~/.ssh/id_rsa
+          
+          chmod 600 ~/.ssh/id_rsa
+          
+          # Verifica formato
+          echo "Verificando formato da chave SSH:"
+          head -1 ~/.ssh/id_rsa
+          
+          # Adiciona o host ao known_hosts
+          IP="${{ needs.provision-infra.outputs.droplet_ip }}"
+          ssh-keyscan -H $IP >> ~/.ssh/known_hosts 2>/dev/null
+      
+      - name: Test SSH Connection
+        run: |
+          IP="${{ needs.provision-infra.outputs.droplet_ip }}"
+          echo "Testing SSH connection to $IP..."
+          
+          # Tentativa com retry
+          for i in {1..5}; do
+            if ssh -o ConnectTimeout=15 \
+                   -o BatchMode=yes \
+                   -o StrictHostKeyChecking=no \
+                   root@$IP "echo 'SSH connection successful'"; then
+              echo "✅ SSH connected on attempt $i"
+              break
+            else
+              echo "Attempt $i failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
+      
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ needs.provision-infra.outputs.droplet_ip }}
+          username: root
+          key: ${{ needs.provision-infra.outputs.ssh_private_key }}  # USA A CHAVE GERADA
+          port: 22
+          timeout: 60s
+          script_stop: true
+          script: |
+            # Script de deploy melhorado
+            set -e
+            
+            echo "=== Starting deployment ==="
+            
+            # 1. Verifica/instala Docker
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              apt-get update
+              apt-get install -y docker.io docker-compose
+              systemctl enable docker
+              systemctl start docker
+            fi
+            
+            # 2. Login no Docker Hub
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+            
+            # 3. Prepara diretório
+            APP_DIR="/app"
+            mkdir -p $APP_DIR
+            cd $APP_DIR
+            
+            # 4. Clone/atualiza código
+            if [ -d "app-itens" ]; then
+              echo "Updating existing repository..."
+              cd app-itens
+              git pull origin main
+            else
+              echo "Cloning repository..."
+              git clone https://github.com/${{ github.repository }}.git app-itens
+              cd app-itens
+            fi
+            
+            # 5. Cria .env
+            if [ ! -f .env ]; then
+              cat > .env << EOF
+            MONGO_ROOT_USER=root
+            MONGO_ROOT_PASS=admin123
+            MONGO_USER=appuser
+            MONGO_PASS=app123
+            MONGO_DB_NAME=meudb
+            EOF
+            fi
+            
+            # 6. Faz deploy
+            echo "Pulling Docker image..."
+            docker pull ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            
+            echo "Stopping existing containers..."
+            docker-compose -f docker-compose.prod.yml down || true
+            
+            echo "Starting new containers..."
+            export IMAGE_TAG=${{ github.sha }}
+            docker-compose -f docker-compose.prod.yml up -d
+            
+            # 7. Verificação
+            echo "Waiting for containers to start..."
+            sleep 15
+            
+            echo "Container status:"
+            docker-compose -f docker-compose.prod.yml ps
+            
+            echo "Application logs:"
+            docker-compose -f docker-compose.prod.yml logs --tail=20 || true
+            
+            echo "=== Deployment completed ==="

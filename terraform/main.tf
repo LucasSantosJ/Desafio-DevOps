@@ -1,61 +1,86 @@
-terraform {
-  required_providers {
-    digitalocean = {
-      source  = "digitalocean/digitalocean"
-      version = "~> 2.0"
-    }
-  }
-
-  backend "s3" {
-    endpoint = "https://sfo3.digitaloceanspaces.com"
-    bucket   = "terraform-state-lucas-itens"
-    key      = "terraform.tfstate"
-
-    region                      = "us-east-1"
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-  }
+# Cria um recurso de chave SSH na DigitalOcean
+resource "digitalocean_ssh_key" "deploy_key" {
+  name       = "deploy-key-${var.droplet_name}"
+  public_key = var.ssh_public_key
 }
 
-provider "digitalocean" {
-  token = var.do_token
-}
-
-# ============================================================
-# SSH KEY
-# ============================================================
-resource "digitalocean_ssh_key" "default" {
-  name       = "terraform-key-lucas"
-  public_key = file(var.ssh_key_path)
-}
-
-# ============================================================
-# DROPLET
-# ============================================================
-resource "digitalocean_droplet" "web_server" {
-  image    = "ubuntu-24-04-x64"
-  name     = "app-itens-prod"
-  region   = "sfo3"
-  size     = "s-1vcpu-2gb"
-
-  ssh_keys = [
-    digitalocean_ssh_key.default.fingerprint
-  ]
-
+resource "digitalocean_droplet" "app_server" {
+  name     = var.droplet_name
+  region   = var.region
+  size     = var.size
+  image    = "ubuntu-22-04-x64"
+  
+  # Usa a chave SSH criada acima
+  ssh_keys = [digitalocean_ssh_key.deploy_key.fingerprint]
+  
+  # Cloud-init para instalar Docker
   user_data = <<-EOF
-    #!/bin/bash
-    apt-get update
-    apt-get install -y docker.io docker-compose-plugin git docker-compose
-    mkdir -p /root/app-itens
-    echo "Ambiente preparado pelo Terraform com sucesso!" >> /var/log/terraform-setup.log
+    #cloud-config
+    package_update: true
+    package_upgrade: true
+    
+    packages:
+      - docker.io
+      - docker-compose
+      - git
+      - curl
+    
+    runcmd:
+      - systemctl enable docker
+      - systemctl start docker
+      - usermod -aG docker ubuntu
+      - mkdir -p /app
+      - chmod 755 /app
+      
+    # Garante que o root tem a chave SSH
+    users:
+      - name: root
+        ssh_authorized_keys:
+          - ${var.ssh_public_key}
   EOF
+
+  tags = ["terraform", "app-server"]
 }
 
-# ============================================================
-# OUTPUT: IP DO DROPLET
-# ============================================================
-output "droplet_ip" {
-  value = digitalocean_droplet.web_server.ipv4_address
+# Firewall para segurança
+resource "digitalocean_firewall" "app_firewall" {
+  name = "app-firewall-${var.droplet_name}"
+  
+  droplet_ids = [digitalocean_droplet.app_server.id]
+  
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "80"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "8080"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
 }
